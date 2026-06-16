@@ -177,11 +177,12 @@ void WebServer::timer(int connfd, struct sockaddr_in client_address)
 
 //若有数据传输，则将定时器往后延迟3个单位
 //并对新的定时器在链表上的位置进行调整
-void WebServer::adjust_timer(util_timer *timer)
+void WebServer::adjust_timer(util_timer *timer, int sockfd)
 {
     time_t cur = time(NULL);
     timer->expire = cur + 3 * TIMESLOT;
-    utils.m_timer_lst.adjust_timer(timer);
+    util_timer *new_timer = utils.m_timer_lst.adjust_timer(timer);
+    users_timer[sockfd].timer = new_timer;
 
     LOG_INFO("%s", "adjust timer once");
 }
@@ -286,7 +287,7 @@ void WebServer::dealwithread(int sockfd)
     {
         if (timer)
         {
-            adjust_timer(timer);
+            adjust_timer(timer, sockfd);
         }
 
         //若监测到读事件，将该事件放入请求队列
@@ -318,7 +319,7 @@ void WebServer::dealwithread(int sockfd)
 
             if (timer)
             {
-                adjust_timer(timer);
+                adjust_timer(timer, sockfd);
             }
         }
         else
@@ -336,7 +337,7 @@ void WebServer::dealwithwrite(int sockfd)
     {
         if (timer)
         {
-            adjust_timer(timer);
+            adjust_timer(timer, sockfd);
         }
 
         m_pool->append(users + sockfd, 1);
@@ -364,7 +365,7 @@ void WebServer::dealwithwrite(int sockfd)
 
             if (timer)
             {
-                adjust_timer(timer);
+                adjust_timer(timer, sockfd);
             }
         }
         else

@@ -22,6 +22,8 @@
 #include <sys/uio.h>
 
 #include <time.h>
+#include <queue>
+#include <vector>
 #include "../log/log.h"
 
 class util_timer;
@@ -36,15 +38,14 @@ struct client_data
 class util_timer
 {
 public:
-    util_timer() : prev(NULL), next(NULL) {}
+    util_timer() : cancelled(false) {}
 
 public:
     time_t expire;
-    
+
     void (* cb_func)(client_data *);
     client_data *user_data;
-    util_timer *prev;
-    util_timer *next;
+    bool cancelled;       // lazy-deletion marker
 };
 
 class sort_timer_lst
@@ -54,15 +55,24 @@ public:
     ~sort_timer_lst();
 
     void add_timer(util_timer *timer);
-    void adjust_timer(util_timer *timer);
+    util_timer *adjust_timer(util_timer *timer);
     void del_timer(util_timer *timer);
     void tick();
 
 private:
-    void add_timer(util_timer *timer, util_timer *lst_head);
+    //最小堆排序规则：按expire升序
+    struct cmp_expire
+    {
+        bool operator()(const util_timer *a, const util_timer *b) const
+        {
+            return a->expire > b->expire;
+        }
+    };
 
-    util_timer *head;
-    util_timer *tail;
+    void purge();
+
+    std::priority_queue<util_timer *, std::vector<util_timer *>, cmp_expire> m_heap;
+    int m_cancelled_count;
 };
 
 class Utils

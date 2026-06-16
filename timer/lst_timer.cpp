@@ -3,17 +3,15 @@
 
 sort_timer_lst::sort_timer_lst()
 {
-    head = NULL;
-    tail = NULL;
+    m_cancelled_count = 0;
 }
+
 sort_timer_lst::~sort_timer_lst()
 {
-    util_timer *tmp = head;
-    while (tmp)
+    while (!m_heap.empty())
     {
-        head = tmp->next;
-        delete tmp;
-        tmp = head;
+        delete m_heap.top();
+        m_heap.pop();
     }
 }
 
@@ -23,126 +21,101 @@ void sort_timer_lst::add_timer(util_timer *timer)
     {
         return;
     }
-    if (!head)
-    {
-        head = tail = timer;
-        return;
-    }
-    if (timer->expire < head->expire)
-    {
-        timer->next = head;
-        head->prev = timer;
-        head = timer;
-        return;
-    }
-    add_timer(timer, head);
+    m_heap.push(timer);
 }
-void sort_timer_lst::adjust_timer(util_timer *timer)
+
+util_timer *sort_timer_lst::adjust_timer(util_timer *timer)
 {
     if (!timer)
     {
-        return;
+        return NULL;
     }
-    util_timer *tmp = timer->next;
-    if (!tmp || (timer->expire < tmp->expire))
-    {
-        return;
-    }
-    if (timer == head)
-    {
-        head = head->next;
-        head->prev = NULL;
-        timer->next = NULL;
-        add_timer(timer, head);
-    }
-    else
-    {
-        timer->prev->next = timer->next;
-        timer->next->prev = timer->prev;
-        add_timer(timer, timer->next);
-    }
+
+    //惰性删除：标记旧节点已取消，新建节点入堆
+    timer->cancelled = true;
+    ++m_cancelled_count;
+
+    util_timer *fresh = new util_timer;
+    fresh->expire = timer->expire;
+    fresh->cb_func = timer->cb_func;
+    fresh->user_data = timer->user_data;
+
+    m_heap.push(fresh);
+
+    if (m_cancelled_count >= 512)
+        purge();
+
+    return fresh;
 }
+
 void sort_timer_lst::del_timer(util_timer *timer)
 {
     if (!timer)
     {
         return;
     }
-    if ((timer == head) && (timer == tail))
-    {
-        delete timer;
-        head = NULL;
-        tail = NULL;
-        return;
-    }
-    if (timer == head)
-    {
-        head = head->next;
-        head->prev = NULL;
-        delete timer;
-        return;
-    }
-    if (timer == tail)
-    {
-        tail = tail->prev;
-        tail->next = NULL;
-        delete timer;
-        return;
-    }
-    timer->prev->next = timer->next;
-    timer->next->prev = timer->prev;
-    delete timer;
-}
-void sort_timer_lst::tick()
-{
-    if (!head)
-    {
-        return;
-    }
-    
-    time_t cur = time(NULL);
-    util_timer *tmp = head;
-    while (tmp)
-    {
-        if (cur < tmp->expire)
-        {
-            break;
-        }
-        tmp->cb_func(tmp->user_data);
-        head = tmp->next;
-        if (head)
-        {
-            head->prev = NULL;
-        }
-        delete tmp;
-        tmp = head;
-    }
+    timer->cancelled = true;
+    ++m_cancelled_count;
 }
 
-void sort_timer_lst::add_timer(util_timer *timer, util_timer *lst_head)
+void sort_timer_lst::tick()
 {
-    util_timer *prev = lst_head;
-    util_timer *tmp = prev->next;
-    while (tmp)
+    if (m_heap.empty())
     {
-        if (timer->expire < tmp->expire)
+        return;
+    }
+
+    time_t cur = time(NULL);
+
+    while (!m_heap.empty())
+    {
+        util_timer *top = m_heap.top();
+        if (top->expire > cur)
         {
-            prev->next = timer;
-            timer->next = tmp;
-            tmp->prev = timer;
-            timer->prev = prev;
             break;
         }
-        prev = tmp;
-        tmp = tmp->next;
+
+        m_heap.pop();
+
+        //惰性删除：跳过已取消的节点
+        if (top->cancelled)
+        {
+            --m_cancelled_count;
+            delete top;
+            continue;
+        }
+
+        top->cb_func(top->user_data);
+        delete top;
     }
-    if (!tmp)
+
+    if (m_cancelled_count >= 512)
+        purge();
+}
+
+void sort_timer_lst::purge()
+{
+    //重建堆，清除已取消的节点
+    std::vector<util_timer *> live;
+
+    while (!m_heap.empty())
     {
-        prev->next = timer;
-        timer->prev = prev;
-        timer->next = NULL;
-        tail = timer;
+        util_timer *t = m_heap.top();
+        m_heap.pop();
+        if (t->cancelled)
+        {
+            delete t;
+        }
+        else
+        {
+            live.push_back(t);
+        }
     }
+
+    for (size_t i = 0; i < live.size(); ++i)
+        m_heap.push(live[i]);
+
+    m_cancelled_count = 0;
 }
 
 void Utils::init(int timeslot)
