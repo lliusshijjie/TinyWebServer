@@ -51,7 +51,7 @@ public:
 class sort_timer_lst
 {
 public:
-    sort_timer_lst();
+    sort_timer_lst() = default;
     ~sort_timer_lst();
 
     void add_timer(util_timer *timer);
