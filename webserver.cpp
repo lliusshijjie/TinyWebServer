@@ -91,7 +91,7 @@ void WebServer::sql_pool()
     m_connPool->init("localhost", m_user, m_passWord, m_databaseName, 3306, m_sql_num, m_close_log);
 
     //初始化数据库读取表
-    users->initmysql_result(m_connPool);
+    HttpConn::load_user_cache(m_connPool);
 }
 
 void WebServer::thread_pool()
@@ -140,7 +140,7 @@ void WebServer::eventListen()
     assert(m_epollfd != -1);
 
     utils.addfd(m_epollfd, m_listenfd, false, m_LISTENTrigmode);
-    http_conn::m_epollfd = m_epollfd;
+    HttpConn::epoll_fd = m_epollfd;
 
     ret = socketpair(PF_UNIX, SOCK_STREAM, 0, m_pipefd);
     assert(ret != -1);
@@ -209,7 +209,7 @@ bool WebServer::dealclientdata()
             LOG_ERROR("%s:errno is:%d", "accept error", errno);
             return false;
         }
-        if (http_conn::m_user_count >= MAX_FD)
+        if (HttpConn::user_count.load() >= MAX_FD)
         {
             utils.show_error(connfd, "Internal server busy");
             LOG_ERROR("%s", "Internal server busy");
@@ -228,7 +228,7 @@ bool WebServer::dealclientdata()
                 LOG_ERROR("%s:errno is:%d", "accept error", errno);
                 break;
             }
-            if (http_conn::m_user_count >= MAX_FD)
+            if (HttpConn::user_count.load() >= MAX_FD)
             {
                 utils.show_error(connfd, "Internal server busy");
                 LOG_ERROR("%s", "Internal server busy");
@@ -294,14 +294,14 @@ void WebServer::dealwithread(int sockfd)
 
         while (true)
         {
-            if (1 == users[sockfd].improv)
+            if (users[sockfd].improv.load(std::memory_order_acquire))
             {
-                if (1 == users[sockfd].timer_flag)
+                if (users[sockfd].timer_flag.load(std::memory_order_acquire))
                 {
                     deal_timer(timer, sockfd);
-                    users[sockfd].timer_flag = 0;
+                    users[sockfd].timer_flag.store(false, std::memory_order_relaxed);
                 }
-                users[sockfd].improv = 0;
+                users[sockfd].improv.store(false, std::memory_order_relaxed);
                 break;
             }
         }
@@ -343,14 +343,14 @@ void WebServer::dealwithwrite(int sockfd)
 
         while (true)
         {
-            if (1 == users[sockfd].improv)
+            if (users[sockfd].improv.load(std::memory_order_acquire))
             {
-                if (1 == users[sockfd].timer_flag)
+                if (users[sockfd].timer_flag.load(std::memory_order_acquire))
                 {
                     deal_timer(timer, sockfd);
-                    users[sockfd].timer_flag = 0;
+                    users[sockfd].timer_flag.store(false, std::memory_order_relaxed);
                 }
-                users[sockfd].improv = 0;
+                users[sockfd].improv.store(false, std::memory_order_relaxed);
                 break;
             }
         }

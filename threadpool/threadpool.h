@@ -1,6 +1,7 @@
 #ifndef THREADPOOL_H
 #define THREADPOOL_H
 
+#include <atomic>
 #include <list>
 #include <cstdio>
 #include <exception>
@@ -119,26 +120,26 @@ void threadpool<T>::run()
             {
                 if (request->read_once())
                 {
-                    request->improv = 1;
+                    request->improv.store(true, std::memory_order_release);
                     connectionRAII mysqlcon(&request->mysql, m_connPool);
                     request->process();
                 }
                 else
                 {
-                    request->improv = 1;
-                    request->timer_flag = 1;
+                    request->improv.store(true, std::memory_order_release);
+                    request->timer_flag.store(true, std::memory_order_release);
                 }
             }
             else
             {
                 if (request->write())
                 {
-                    request->improv = 1;
+                    request->improv.store(true, std::memory_order_release);
                 }
                 else
                 {
-                    request->improv = 1;
-                    request->timer_flag = 1;
+                    request->improv.store(true, std::memory_order_release);
+                    request->timer_flag.store(true, std::memory_order_release);
                 }
             }
         }
