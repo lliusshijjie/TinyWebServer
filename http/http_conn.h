@@ -41,12 +41,12 @@ public:
         StaticFile      // other -> serve file directly
     };
 
-    // Shared across all connections; initialised once by WebServer.
+    // 所有连接共享；由 WebServer 初始化一次
     static std::atomic<int> user_count;
     static int              epoll_fd;
     static UserCache        user_cache;
 
-    // State accessed by threadpool and webserver (Reactor handshake protocol).
+    // 线程池和主事件循环共享的状态（Reactor 握手协议）
     std::atomic<bool> improv{false};
     std::atomic<bool> timer_flag{false};
     int               m_state{0};   // 0 = read, 1 = write
@@ -57,7 +57,7 @@ public:
     HttpConn(const HttpConn&)            = delete;
     HttpConn& operator=(const HttpConn&) = delete;
 
-    // Called by WebServer for each accepted connection.
+    // 每个新连接由 WebServer 调用一次
     void init(int sockfd, const sockaddr_in& addr,
               std::string_view root, int trig_mode, int close_log,
               std::string_view user, std::string_view passwd,
@@ -70,13 +70,13 @@ public:
 
     const sockaddr_in* get_address() const noexcept { return &address_; }
 
-    // Load username/password table into the shared cache (called once at startup).
+    // 启动时一次性加载用户名/密码表到共享缓存
     static void load_user_cache(connection_pool* pool) {
         user_cache.load(pool);
     }
 
 private:
-    // Parsing helpers
+    // HTTP 解析相关
     void       reset_state();
     LineStatus parse_line();
     HttpCode   process_read();
@@ -88,7 +88,7 @@ private:
     static UrlAction classify_url(std::string_view last_char);
     std::string_view get_line() const noexcept;
 
-    // Response helpers
+    // HTTP 响应构建相关
     bool process_write(HttpCode ret);
     bool add_response(const char* fmt, ...);
     bool add_status_line(int status, std::string_view title);
@@ -99,11 +99,11 @@ private:
     bool add_blank_line();
     bool add_content(std::string_view content);
 
-    // ------- connection identity -------
+    // ------- 连接标识 -------
     int         sockfd_{-1};
     sockaddr_in address_{};
 
-    // ------- per-connection config -------
+    // ------- 连接级配置 -------
     std::string doc_root_;
     int         trig_mode_{0};
     int         m_close_log;  // 0=open, 1=close (used by LOG macros)
@@ -111,13 +111,13 @@ private:
     std::string sql_passwd_;
     std::string sql_name_;
 
-    // ------- read path -------
+    // ------- 读缓冲 -------
     std::array<char, kReadBufSize> read_buf_{};
     int read_idx_{0};
     int checked_idx_{0};
     int line_start_{0};
 
-    // ------- write path -------
+    // ------- 写缓冲 -------
     std::array<char, kWriteBufSize> write_buf_{};
     int   write_idx_{0};
     int   bytes_to_send_{0};
@@ -125,7 +125,7 @@ private:
     iovec iv_[2]{};
     int   iv_count_{0};
 
-    // ------- HTTP parsing state -------
+    // ------- HTTP 解析状态 -------
     CheckState  check_state_{CheckState::RequestLine};
     Method      method_{Method::Get};
     bool        is_cgi_{false};
@@ -136,11 +136,11 @@ private:
     long        content_length_{0};
     std::string request_body_;
 
-    // ------- file serving -------
+    // ------- 文件服务 -------
     std::string real_file_;
     struct stat file_stat_{};
     MmapGuard   mmap_file_;
 };
 
-// Backward-compatibility alias — lets existing callers keep using 'http_conn'.
+// 向后兼容别名 — 已有调用方可继续使用 'http_conn'
 using http_conn = HttpConn;

@@ -3,7 +3,7 @@
 #include <sys/mman.h>
 #include <cstddef>
 
-// RAII wrapper for mmap/munmap. Move-only; not copyable.
+// mmap/munmap 的 RAII 包装，只移不可拷贝
 class MmapGuard {
 public:
     MmapGuard() = default;

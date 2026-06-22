@@ -7,17 +7,17 @@
 #include <cstdarg>
 #include <cstring>
 #include <fcntl.h>
-#include <strings.h>   // strncasecmp
+#include <strings.h>   // strncasecmp 大小写不敏感比较
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
-// ---- Static member definitions ----
+// ---- 静态成员定义 ----
 std::atomic<int> HttpConn::user_count{0};
 int              HttpConn::epoll_fd = -1;
 UserCache        HttpConn::user_cache;
 
-// ---- Module-private epoll helpers (replacing duplicate free functions) ----
+// ---- 模块内 epoll 辅助函数（替代原重复的自由函数） ----
 namespace {
 
 void set_nonblocking(int fd) {
@@ -49,7 +49,7 @@ void mod_fd(int epollfd, int fd, int ev_flags, int trig_mode) {
     epoll_ctl(epollfd, EPOLL_CTL_MOD, fd, &ev);
 }
 
-// HTTP response constants
+// HTTP 响应常量
 constexpr std::string_view k200Title   = "OK";
 constexpr std::string_view k400Title   = "Bad Request";
 constexpr std::string_view k400Body    = "Your request has bad syntax or is inherently impossible to satisfy.\n";
@@ -63,7 +63,7 @@ constexpr std::string_view k500Body    = "There was an unusual problem serving t
 } // namespace
 
 // ============================================================
-//  Lifecycle
+//  生命周期
 // ============================================================
 
 void HttpConn::init(int sockfd, const sockaddr_in& addr,
@@ -79,7 +79,7 @@ void HttpConn::init(int sockfd, const sockaddr_in& addr,
     sql_passwd_ = std::string(passwd);
     sql_name_   = std::string(db_name);
 
-    // Assign trig_mode_ BEFORE calling add_fd so the right mode is used.
+    // add_fd 调用前先设置 trig_mode_，确保使用正确的触发模式
     add_fd(epoll_fd, sockfd_, /*one_shot=*/true, trig_mode_);
     user_count.fetch_add(1, std::memory_order_relaxed);
 
@@ -127,14 +127,14 @@ void HttpConn::close_conn(bool real_close) {
 }
 
 // ============================================================
-//  Read
+//  读取
 // ============================================================
 
 bool HttpConn::read_once() {
     if (read_idx_ >= kReadBufSize) return false;
 
     if (trig_mode_ == 0) {
-        // LT: single recv per epoll notification
+        // LT 模式：每次 epoll 通知只调用一次 recv
         int n = static_cast<int>(
             recv(sockfd_, read_buf_.data() + read_idx_,
                  kReadBufSize - read_idx_, 0));
@@ -143,7 +143,7 @@ bool HttpConn::read_once() {
         return true;
     }
 
-    // ET: drain the socket until EAGAIN
+    // ET 模式：循环读取直到 EAGAIN
     while (true) {
         int n = static_cast<int>(
             recv(sockfd_, read_buf_.data() + read_idx_,
@@ -159,7 +159,7 @@ bool HttpConn::read_once() {
 }
 
 // ============================================================
-//  HTTP parsing — state machine
+//  HTTP 解析 — 状态机
 // ============================================================
 
 std::string_view HttpConn::get_line() const noexcept {
@@ -224,7 +224,7 @@ HttpConn::HttpCode HttpConn::process_read() {
 }
 
 HttpConn::HttpCode HttpConn::parse_request_line(std::string_view text) {
-    // Extract method
+    // 提取请求方法
     auto sp1 = text.find_first_of(" \t");
     if (sp1 == std::string_view::npos) return HttpCode::BadRequest;
 
@@ -233,24 +233,24 @@ HttpConn::HttpCode HttpConn::parse_request_line(std::string_view text) {
     else if (method_sv == "POST") { method_ = Method::Post; is_cgi_ = true; }
     else return HttpCode::BadRequest;
 
-    // Extract URL
+    // 提取 URL
     auto url_s = text.find_first_not_of(" \t", sp1);
     if (url_s == std::string_view::npos) return HttpCode::BadRequest;
     auto url_e = text.find_first_of(" \t", url_s);
     if (url_e == std::string_view::npos) return HttpCode::BadRequest;
     std::string_view url_sv = text.substr(url_s, url_e - url_s);
 
-    // Extract version
+    // 提取版本号
     auto ver_s = text.find_first_not_of(" \t", url_e);
     if (ver_s == std::string_view::npos) return HttpCode::BadRequest;
     std::string_view ver_sv = text.substr(ver_s);
-    // Trim trailing whitespace/null bytes from the line
+    // 去除行尾空白字符和空字节
     while (!ver_sv.empty() && (ver_sv.back() == '\0' || ver_sv.back() == '\r'))
         ver_sv.remove_suffix(1);
     if (strncasecmp(ver_sv.data(), "HTTP/1.1", 8) != 0)
         return HttpCode::BadRequest;
 
-    // Strip scheme if present
+    // 剥离协议头（http:// 或 https://）
     if (url_sv.size() > 7 && strncasecmp(url_sv.data(), "http://", 7) == 0) {
         url_sv.remove_prefix(7);
         auto slash = url_sv.find('/');
@@ -271,7 +271,7 @@ HttpConn::HttpCode HttpConn::parse_request_line(std::string_view text) {
 }
 
 HttpConn::HttpCode HttpConn::parse_headers(std::string_view text) {
-    // Blank line (first char is '\0' after parse_line replaces \r\n with \0\0)
+    // 空行（parse_line 将 \r\n 替换为 \0\0，因此首字符为 '\0'）
     if (text[0] == '\0') {
         if (content_length_ != 0) {
             check_state_ = CheckState::Content;
@@ -280,7 +280,7 @@ HttpConn::HttpCode HttpConn::parse_headers(std::string_view text) {
         return HttpCode::GetRequest;
     }
 
-    // Helper: case-insensitive prefix match + trim value
+    // 辅助函数：大小写不敏感前缀匹配 + 去除值的前导空白
     auto header_val = [&](std::string_view prefix) -> std::string_view {
         if (text.size() <= prefix.size()) return {};
         if (strncasecmp(text.data(), prefix.data(), prefix.size()) != 0) return {};
@@ -311,7 +311,7 @@ HttpConn::HttpCode HttpConn::parse_content(std::string_view text) {
 }
 
 // ============================================================
-//  Request dispatch
+//  请求分发
 // ============================================================
 
 HttpConn::UrlAction HttpConn::classify_url(std::string_view seg) {
@@ -329,7 +329,7 @@ HttpConn::UrlAction HttpConn::classify_url(std::string_view seg) {
 }
 
 HttpConn::HttpCode HttpConn::do_request() {
-    // Find the character immediately after the last '/' to determine action.
+    // 找到最后一个 '/' 后面的字符，确定路由动作
     auto last_slash = url_.rfind('/');
     std::string_view seg = (last_slash == std::string::npos)
                                ? std::string_view(url_)
@@ -337,7 +337,7 @@ HttpConn::HttpCode HttpConn::do_request() {
 
     UrlAction action = classify_url(seg);
 
-    // CGI handler: login or registration via POST
+    // CGI 处理：POST 登录或注册
     if (is_cgi_ &&
         (action == UrlAction::LoginSubmit || action == UrlAction::RegisterSubmit)) {
         auto opt_user = get_param(request_body_, "user");
@@ -358,7 +358,7 @@ HttpConn::HttpCode HttpConn::do_request() {
         }
     }
 
-    // Map action to file path
+    // 将 URL 动作映射到文件路径
     switch (action) {
     case UrlAction::RegisterPage:   real_file_ = doc_root_ + "/register.html"; break;
     case UrlAction::LoginPage:      real_file_ = doc_root_ + "/log.html";      break;
@@ -389,7 +389,7 @@ HttpConn::HttpCode HttpConn::do_request() {
 }
 
 // ============================================================
-//  Response building
+//  响应构建
 // ============================================================
 
 bool HttpConn::add_response(const char* fmt, ...) {
@@ -492,7 +492,7 @@ bool HttpConn::process_write(HttpCode ret) {
 }
 
 // ============================================================
-//  Write
+//  写操作
 // ============================================================
 
 bool HttpConn::write() {
@@ -517,7 +517,7 @@ bool HttpConn::write() {
         bytes_sent_    += static_cast<int>(n);
         bytes_to_send_ -= static_cast<int>(n);
 
-        // Adjust iovec pointers after a partial write
+        // 部分写入后调整 iovec 指针
         if (bytes_sent_ >= static_cast<int>(iv_[0].iov_len)) {
             iv_[0].iov_len  = 0;
             iv_[1].iov_base = mmap_file_.get() + (bytes_sent_ - write_idx_);
@@ -540,7 +540,7 @@ bool HttpConn::write() {
 }
 
 // ============================================================
-//  Entry point called by threadpool
+//  线程池调用入口
 // ============================================================
 
 void HttpConn::process() {

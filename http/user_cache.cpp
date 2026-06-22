@@ -5,7 +5,7 @@
 #include "../CGImysql/sql_connection_pool.h"
 #include "../log/log.h"
 
-// Required by LOG_INFO / LOG_ERROR macros (0 = logging enabled).
+// LOG_INFO / LOG_ERROR 宏依赖此变量（0 = 日志开启）
 namespace { int m_close_log = 0; }
 
 void UserCache::load(connection_pool* pool) {
@@ -17,7 +17,7 @@ void UserCache::load(connection_pool* pool) {
         return;
     }
 
-    // RAII for result set
+    // 结果集 RAII 自动释放
     auto result = std::unique_ptr<MYSQL_RES, decltype(&mysql_free_result)>(
         mysql_store_result(mysql), mysql_free_result);
 
@@ -48,7 +48,7 @@ bool UserCache::authenticate(std::string_view user,
 
 bool UserCache::register_user(std::string_view user, std::string_view pass,
                               MYSQL* db) {
-    // Check existence under read lock first to avoid unnecessary writes.
+    // 先在读锁下检查是否已存在，避免不必要的写操作
     {
         std::shared_lock rlock(mutex_);
         if (users_.count(std::string(user))) {
@@ -56,8 +56,8 @@ bool UserCache::register_user(std::string_view user, std::string_view pass,
         }
     }
 
-    // Escape both username and password to prevent SQL injection.
-    // mysql_real_escape_string needs at most 2*len+1 bytes.
+    // 对用户名和密码进行转义，防止 SQL 注入
+    // mysql_real_escape_string 最多需要 2*len+1 字节的缓冲区
     std::string escaped_user(user.size() * 2 + 1, '\0');
     std::string escaped_pass(pass.size() * 2 + 1, '\0');
 
@@ -75,7 +75,7 @@ bool UserCache::register_user(std::string_view user, std::string_view pass,
 
     std::unique_lock wlock(mutex_);
 
-    // Re-check under write lock (double-checked locking pattern).
+    // 在写锁下二次检查（双重检查锁定模式）
     if (users_.count(std::string(user))) {
         return false;
     }

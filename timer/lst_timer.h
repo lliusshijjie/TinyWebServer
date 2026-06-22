@@ -45,7 +45,7 @@ public:
 
     void (* cb_func)(client_data *);
     client_data *user_data;
-    bool cancelled;       // lazy-deletion marker
+    bool cancelled;       // 惰性删除标记
 };
 
 class sort_timer_lst
