@@ -2,13 +2,14 @@
 
 TinyWebServer
 ===============
-Linux下C++轻量级Web服务器，助力初学者快速实践网络编程，搭建属于自己的服务器.
+Linux下C++17轻量级Web服务器，助力初学者快速实践网络编程，搭建属于自己的服务器.
 
 * 使用 **线程池 + 非阻塞socket + epoll(ET和LT均实现) + 事件处理(Reactor和模拟Proactor均实现)** 的并发模型
 * 使用**状态机**解析HTTP请求报文，支持解析**GET和POST**请求
 * 访问服务器数据库实现web端用户**注册、登录**功能，可以请求服务器**图片和视频文件**
 * 实现**同步/异步日志系统**，记录服务器运行状态
 * 经Webbench压力测试可以实现**上万的并发连接**数据交换
+* **C++17 现代化重构**：智能指针、RAII、原子操作、`std::thread`/`std::mutex`/`std::condition_variable`
 
 
 写在前面
@@ -31,21 +32,133 @@ Linux下C++轻量级Web服务器，助力初学者快速实践网络编程，搭
 概述
 ----------
 
-> * C/C++
+> * C++17
 > * B/S模型
-> * [线程同步机制包装类](https://github.com/qinguoyi/TinyWebServer/tree/master/lock)
-> * [http连接请求处理类](https://github.com/qinguoyi/TinyWebServer/tree/master/http)
-> * [半同步/半反应堆线程池](https://github.com/qinguoyi/TinyWebServer/tree/master/threadpool)
-> * [定时器处理非活动连接](https://github.com/qinguoyi/TinyWebServer/tree/master/timer)
-> * [同步/异步日志系统 ](https://github.com/qinguoyi/TinyWebServer/tree/master/log)  
-> * [数据库连接池](https://github.com/qinguoyi/TinyWebServer/tree/master/CGImysql) 
-> * [同步线程注册和登录校验](https://github.com/qinguoyi/TinyWebServer/tree/master/CGImysql) 
-> * [简易服务器压力测试](https://github.com/qinguoyi/TinyWebServer/tree/master/test_presure)
+> * [HTTP 请求解析](https://github.com/lliusshijjie/TinyWebServer/tree/master/http) — 状态机 + `std::string_view`，支持 GET/POST，RAII mmap，`std::shared_mutex` 线程安全用户缓存
+> * [半同步/半反应堆线程池](https://github.com/lliusshijjie/TinyWebServer/tree/master/threadpool) — C++17 `std::thread` + `std::mutex` + `std::condition_variable`，RAII 锁管理，优雅关闭
+> * [最小堆定时器](https://github.com/lliusshijjie/TinyWebServer/tree/master/timer) — `std::priority_queue` + 惰性删除，O(log n) 插入/调整
+> * [同步/异步日志系统](https://github.com/lliusshijjie/TinyWebServer/tree/master/log)
+> * [数据库连接池](https://github.com/lliusshijjie/TinyWebServer/tree/master/CGImysql) — RAII 连接获取/释放
+> * [线程安全用户注册与登录校验](https://github.com/lliusshijjie/TinyWebServer/tree/master/http/user_cache.cpp) — SQL 注入防护
+> * [简易服务器压力测试](https://github.com/lliusshijjie/TinyWebServer/tree/master/test_pressure)
 
 
 框架
 -------------
-<div align=center><img src="http://ww1.sinaimg.cn/large/005TJ2c7ly1ge0j1atq5hj30g60lm0w4.jpg" height="765"/> </div>
+
+### 整体架构（C++17 重构版）
+
+```mermaid
+graph TB
+    subgraph Clients["客户端"]
+        Browser["浏览器 / curl / webbench"]
+    end
+
+    subgraph EventLoop["主事件循环 epoll_wait()"]
+        LT_ET["LT / ET 触发模式"]
+        Signal["SIGALRM 定时信号"]
+    end
+
+    subgraph ThreadPool["线程池 threadpool （C++17）"]
+        Queue["工作队列 std::deque&lt;T*&gt;"]
+        Workers["工作线程 std::vector&lt;std::thread&gt;"]
+        Sync["std::mutex + std::condition_variable"]
+    end
+
+    subgraph HTTP["HTTP 处理 http_conn （C++17）"]
+        Read["read_once() — recv 读取"]
+        Parse["parse_line() — \r\n 行定界"]
+        StateMachine["状态机: RequestLine → Header → Content"]
+        Router["do_request() — URL 路由"]
+        Response["process_write() — writev() + mmap 响应"]
+    end
+
+    subgraph Timer["定时器 sort_timer_lst"]
+        Heap["最小堆 std::priority_queue + 惰性删除"]
+        Callback["cb_func() — 关闭超时连接"]
+    end
+
+    subgraph DB["数据库层"]
+        ConnPool["连接池 connection_pool"]
+        RAII["connectionRAII — 自动获取/释放"]
+        UserCache["用户缓存 std::shared_mutex"]
+        MySQL[("MySQL")]
+    end
+
+    subgraph Log["日志系统"]
+        SyncLog["同步日志"]
+        AsyncLog["异步日志 — 阻塞队列"]
+    end
+
+    Browser -->|"HTTP Request"| EventLoop
+    EventLoop -->|"读事件"| ThreadPool
+    EventLoop -->|"信号"| Timer
+    Timer -->|"tick() 清理过期连接"| Callback
+    ThreadPool -->|"dispatch"| HTTP
+    HTTP -->|"CGI 请求"| DB
+    ConnPool --> RAII
+    RAII --> MySQL
+    UserCache --> MySQL
+    EventLoop -.-> Log
+    ThreadPool -.-> Log
+    HTTP -.-> Log
+```
+
+### 数据流详解
+
+```
+                      ┌───────────┐
+  Client ──connect──▶  │ listenfd  │  (LT/ET)
+                      └─────┬─────┘
+                            │ accept
+                      ┌─────▼─────┐
+                      │   connfd  │  ET + EPOLLONESHOT
+                      └─────┬─────┘
+                            │ epoll_wait 返回
+                      ┌─────▼──────────┐
+                      │  read_once()   │  循环 recv() 直到 EAGAIN
+                      └─────┬──────────┘
+                            │
+                      ┌─────▼──────────┐
+                      │  parse_line()  │  \r\n 行定界 → C 字符串
+                      └─────┬──────────┘
+                            │
+         ╔══════════════════▼══════════════════╗
+         ║  process_read()  HTTP 状态机        ║
+         ║  RequestLine → Header → Content     ║
+         ╚══════════════════┬══════════════════╝
+                            │
+                   ┌───────▼───────┐
+                   │  do_request() │  URL 路由 + CGI 处理
+                   └───────┬───────┘
+                           │
+              ┌────────────┼────────────┐
+              ▼            ▼            ▼
+         StaticFile    Login/Reg    404/403
+              │            │            │
+              └────────────┼────────────┘
+                           │
+                   ┌───────▼────────┐
+                   │ process_write()│  writev() + mmap
+                   └───────┬────────┘
+                           │
+                   ┌───────▼────────┐
+                   │    Client      │  接收 HTTP Response
+                   └────────────────┘
+```
+
+### 模块总览
+
+| 模块 | 目录 | C++17 特性 |
+|------|------|------------|
+| HTTP 解析 | `http/http_conn.h/.cpp` | `enum class`, `std::string_view`, `std::array`, `std::atomic<T>`, RAII (MmapGuard) |
+| 用户缓存 | `http/user_cache.h/.cpp` | `std::shared_mutex`, `std::unique_lock`, `std::shared_lock`, 参数化 SQL |
+| URL 解析 | `http/url_params.h` | `std::optional`, `std::string_view`, 栈安全 |
+| 线程池 | `threadpool/threadpool.h` | `std::thread`, `std::mutex`, `std::condition_variable`, `std::function`, `std::deque` |
+| 定时器 | `timer/lst_timer.h/.cpp` | `std::priority_queue`, 惰性删除 O(log n) |
+| 连接池 | `CGImysql/` | RAII (connectionRAII), 信号量 |
+| 日志 | `log/` | 同步/异步, 阻塞队列 |
+| 锁封装 | `lock/locker.h` | POSIX mutex/sem/cond 包装（过渡用） |
 
 Demo演示
 ----------
@@ -98,6 +211,10 @@ Demo演示
 
 更新日志
 -------
+- [x] **C++17 现代化重构**：`http_conn` 全面采用 C++17 特性（`enum class`、`std::string_view`、`std::atomic`、RAII mmap、`std::shared_mutex` 线程安全缓存）
+- [x] **修复安全漏洞**：SQL 注入防护（`mysql_real_escape_string`）、栈缓冲区溢出修复（POST 参数解析）
+- [x] **定时器重构**：从有序双向链表（O(n)）升级为最小堆 + 惰性删除（O(log n)）
+- [x] **线程池现代化**：`pthread_t` → `std::thread`，`sem_t` → `std::condition_variable`，手动锁 → RAII `std::lock_guard`/`std::unique_lock`，支持优雅关闭（join 替代 detach）
 - [x] 解决请求服务器上大文件的Bug
 - [x] 增加请求视频文件的页面
 - [x] 解决数据库同步校验内存泄漏
@@ -166,6 +283,8 @@ Demo演示
 
     ```C++
     sh ./build.sh
+    // 或使用 Makefile（需要 g++ 支持 C++17）
+    make server
     ```
 
 * 启动server
@@ -252,8 +371,10 @@ Star History
 ---------
 [![Star History Chart](https://api.star-history.com/svg?repos=qinguoyi/TinyWebServer&type=Date)](https://star-history.com/#qinguoyi/TinyWebServer&Date)
 
-CPP11实现
+C++11/C++17实现
 ------------
+本项目已完成 C++17 现代化重构，采用 `std::thread`、`std::mutex`、`std::condition_variable`、`std::atomic`、`std::string_view`、`enum class`、RAII 等现代 C++ 特性。
+
 更简洁，更优雅的CPP11实现：[Webserver](https://github.com/markparticle/WebServer)
 
 

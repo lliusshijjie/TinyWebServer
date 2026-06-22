@@ -72,7 +72,7 @@ private:
     void purge();
 
     std::priority_queue<util_timer *, std::vector<util_timer *>, cmp_expire> m_heap;
-    int m_cancelled_count;
+    int m_cancelled_count = 0;
 };
 
 class Utils

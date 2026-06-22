@@ -1,11 +1,6 @@
 #include "lst_timer.h"
 #include "../http/http_conn.h"
 
-sort_timer_lst::sort_timer_lst()
-{
-    m_cancelled_count = 0;
-}
-
 sort_timer_lst::~sort_timer_lst()
 {
     while (!m_heap.empty())

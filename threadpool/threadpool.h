@@ -2,119 +2,56 @@
 #define THREADPOOL_H
 
 #include <atomic>
-#include <list>
-#include <cstdio>
-#include <exception>
-#include <pthread.h>
-#include "../lock/locker.h"
+#include <condition_variable>
+#include <deque>
+#include <functional>
+#include <mutex>
+#include <stdexcept>
+#include <thread>
+#include <vector>
+
 #include "../CGImysql/sql_connection_pool.h"
 
 template <typename T>
 class threadpool
 {
 public:
-    /*thread_number是线程池中线程的数量，max_requests是请求队列中最多允许的、等待处理的请求的数量*/
-    threadpool(int actor_model, connection_pool *connPool, int thread_number = 8, int max_request = 10000);
+    threadpool(int actor_model, connection_pool *connPool,
+               int thread_number = 8, int max_request = 10000);
     ~threadpool();
     bool append(T *request, int state);
     bool append_p(T *request);
 
 private:
-    /*工作线程运行的函数，它不断从工作队列中取出任务并执行之*/
-    static void *worker(void *arg);
     void run();
 
-private:
-    int m_thread_number;        //线程池中的线程数
-    int m_max_requests;         //请求队列中允许的最大请求数
-    pthread_t *m_threads;       //描述线程池的数组，其大小为m_thread_number
-    std::list<T *> m_workqueue; //请求队列
-    locker m_queuelocker;       //保护请求队列的互斥锁
-    sem m_queuestat;            //是否有任务需要处理
-    connection_pool *m_connPool;  //数据库
-    int m_actor_model;          //模型切换
+    int m_thread_number;
+    int m_max_requests;
+    std::deque<T *> m_workqueue;
+    std::mutex m_mutex;
+    std::condition_variable m_cond;
+    connection_pool *m_connPool;
+    std::atomic<bool> m_stop{false};
+    std::function<void(T *)> m_dispatcher;
+    std::vector<std::thread> m_workers;
 };
+
 template <typename T>
-threadpool<T>::threadpool( int actor_model, connection_pool *connPool, int thread_number, int max_requests) : m_actor_model(actor_model),m_thread_number(thread_number), m_max_requests(max_requests), m_threads(NULL),m_connPool(connPool)
+threadpool<T>::threadpool(int actor_model, connection_pool *connPool,
+                          int thread_number, int max_requests)
+    : m_thread_number(thread_number)
+    , m_max_requests(max_requests)
+    , m_connPool(connPool)
 {
     if (thread_number <= 0 || max_requests <= 0)
-        throw std::exception();
-    m_threads = new pthread_t[m_thread_number];
-    if (!m_threads)
-        throw std::exception();
-    for (int i = 0; i < thread_number; ++i)
+        throw std::invalid_argument(
+            "threadpool: thread_number and max_requests must be positive");
+
+    // 根据actor_model一次性设置分发函数，消除热路径上的运行时分支
+    if (actor_model == 1)
     {
-        if (pthread_create(m_threads + i, NULL, worker, this) != 0)
-        {
-            delete[] m_threads;
-            throw std::exception();
-        }
-        if (pthread_detach(m_threads[i]))
-        {
-            delete[] m_threads;
-            throw std::exception();
-        }
-    }
-}
-template <typename T>
-threadpool<T>::~threadpool()
-{
-    delete[] m_threads;
-}
-template <typename T>
-bool threadpool<T>::append(T *request, int state)
-{
-    m_queuelocker.lock();
-    if (m_workqueue.size() >= m_max_requests)
-    {
-        m_queuelocker.unlock();
-        return false;
-    }
-    request->m_state = state;
-    m_workqueue.push_back(request);
-    m_queuelocker.unlock();
-    m_queuestat.post();
-    return true;
-}
-template <typename T>
-bool threadpool<T>::append_p(T *request)
-{
-    m_queuelocker.lock();
-    if (m_workqueue.size() >= m_max_requests)
-    {
-        m_queuelocker.unlock();
-        return false;
-    }
-    m_workqueue.push_back(request);
-    m_queuelocker.unlock();
-    m_queuestat.post();
-    return true;
-}
-template <typename T>
-void *threadpool<T>::worker(void *arg)
-{
-    threadpool *pool = (threadpool *)arg;
-    pool->run();
-    return pool;
-}
-template <typename T>
-void threadpool<T>::run()
-{
-    while (true)
-    {
-        m_queuestat.wait();
-        m_queuelocker.lock();
-        if (m_workqueue.empty())
-        {
-            m_queuelocker.unlock();
-            continue;
-        }
-        T *request = m_workqueue.front();
-        m_workqueue.pop_front();
-        m_queuelocker.unlock();
-        if (!request)
-            continue;
-        if (1 == m_actor_model)
+        // reactor 模式：工作线程负责 I/O + 处理
+        m_dispatcher = [this](T *request)
         {
             if (0 == request->m_state)
             {
@@ -142,12 +79,105 @@ void threadpool<T>::run()
                     request->timer_flag.store(true, std::memory_order_release);
                 }
             }
-        }
-        else
+        };
+    }
+    else
+    {
+        // proactor 模式：主线程已完成 I/O，工作线程只负责处理
+        m_dispatcher = [this](T *request)
         {
             connectionRAII mysqlcon(&request->mysql, m_connPool);
             request->process();
+        };
+    }
+
+    // 创建工作线程，异常安全：如果部分线程创建失败，停止已创建的线程并重抛异常
+    m_workers.reserve(thread_number);
+    try
+    {
+        for (int i = 0; i < thread_number; ++i)
+            m_workers.emplace_back([this] { run(); });
+    }
+    catch (...)
+    {
+        m_stop.store(true, std::memory_order_release);
+        m_cond.notify_all();
+        for (auto &t : m_workers)
+        {
+            if (t.joinable())
+                t.join();
         }
+        throw;
     }
 }
+
+template <typename T>
+threadpool<T>::~threadpool()
+{
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        m_stop.store(true, std::memory_order_release);
+    }
+    m_cond.notify_all();
+    for (auto &t : m_workers)
+    {
+        if (t.joinable())
+            t.join();
+    }
+}
+
+template <typename T>
+bool threadpool<T>::append(T *request, int state)
+{
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (m_workqueue.size() >= static_cast<size_t>(m_max_requests))
+            return false;
+        request->m_state = state;
+        m_workqueue.push_back(request);
+    }
+    m_cond.notify_one();
+    return true;
+}
+
+template <typename T>
+bool threadpool<T>::append_p(T *request)
+{
+    {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (m_workqueue.size() >= static_cast<size_t>(m_max_requests))
+            return false;
+        m_workqueue.push_back(request);
+    }
+    m_cond.notify_one();
+    return true;
+}
+
+template <typename T>
+void threadpool<T>::run()
+{
+    while (true)
+    {
+        T *request = nullptr;
+
+        {
+            std::unique_lock<std::mutex> lock(m_mutex);
+            m_cond.wait(lock, [this] {
+                return m_stop.load(std::memory_order_acquire)
+                       || !m_workqueue.empty();
+            });
+
+            // 停止信号 + 队列已清空 → 安全退出
+            if (m_stop.load(std::memory_order_acquire) && m_workqueue.empty())
+                return;
+
+            request = m_workqueue.front();
+            m_workqueue.pop_front();
+        }  // 锁在此释放（RAII），确保处理请求时不持有锁
+
+        if (request)
+            m_dispatcher(request);
+    }
+}
+
 #endif
