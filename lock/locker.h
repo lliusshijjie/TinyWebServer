@@ -26,6 +26,18 @@ public:
     {
         sem_destroy(&m_sem);
     }
+
+    // sem_t 地址可能被内核使用，禁止拷贝和移动
+    sem(const sem &) = delete;
+    sem &operator=(const sem &) = delete;
+
+    // 重新初始化信号量（替代 reserve = sem(n) 的赋值写法）
+    bool reset(int num)
+    {
+        sem_destroy(&m_sem);
+        return sem_init(&m_sem, 0, num) == 0;
+    }
+
     bool wait()
     {
         return sem_wait(&m_sem) == 0;
@@ -38,6 +50,7 @@ public:
 private:
     sem_t m_sem;
 };
+
 class locker
 {
 public:
@@ -52,6 +65,10 @@ public:
     {
         pthread_mutex_destroy(&m_mutex);
     }
+
+    locker(const locker &) = delete;
+    locker &operator=(const locker &) = delete;
+
     bool lock()
     {
         return pthread_mutex_lock(&m_mutex) == 0;
@@ -68,6 +85,7 @@ public:
 private:
     pthread_mutex_t m_mutex;
 };
+
 class cond
 {
 public:
@@ -75,7 +93,6 @@ public:
     {
         if (pthread_cond_init(&m_cond, NULL) != 0)
         {
-            //pthread_mutex_destroy(&m_mutex);
             throw std::exception();
         }
     }
@@ -83,21 +100,17 @@ public:
     {
         pthread_cond_destroy(&m_cond);
     }
+
+    cond(const cond &) = delete;
+    cond &operator=(const cond &) = delete;
+
     bool wait(pthread_mutex_t *m_mutex)
     {
-        int ret = 0;
-        //pthread_mutex_lock(&m_mutex);
-        ret = pthread_cond_wait(&m_cond, m_mutex);
-        //pthread_mutex_unlock(&m_mutex);
-        return ret == 0;
+        return pthread_cond_wait(&m_cond, m_mutex) == 0;
     }
     bool timewait(pthread_mutex_t *m_mutex, struct timespec t)
     {
-        int ret = 0;
-        //pthread_mutex_lock(&m_mutex);
-        ret = pthread_cond_timedwait(&m_cond, m_mutex, &t);
-        //pthread_mutex_unlock(&m_mutex);
-        return ret == 0;
+        return pthread_cond_timedwait(&m_cond, m_mutex, &t) == 0;
     }
     bool signal()
     {
@@ -109,7 +122,6 @@ public:
     }
 
 private:
-    //static pthread_mutex_t m_mutex;
     pthread_cond_t m_cond;
 };
 #endif

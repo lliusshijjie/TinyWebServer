@@ -8,8 +8,6 @@
 #include <pthread.h>
 #include "block_queue.h"
 
-using namespace std;
-
 class Log
 {
 public:
@@ -20,9 +18,9 @@ public:
         return &instance;
     }
 
-    static void *flush_log_thread(void *args)
+    static void *flush_log_thread(void * /*args*/)
     {
-        Log::get_instance()->async_write_log();
+        return Log::get_instance()->async_write_log();
     }
     //可选择的参数有日志文件、日志缓冲区大小、最大行数以及最长日志条队列
     bool init(const char *file_name, int close_log, int log_buf_size = 8192, int split_lines = 5000000, int max_queue_size = 0);
@@ -31,12 +29,16 @@ public:
 
     void flush(void);
 
+    // 禁止拷贝和移动（单例不应被复制）
+    Log(const Log &) = delete;
+    Log &operator=(const Log &) = delete;
+
 private:
     Log();
-    virtual ~Log();
+    ~Log();
     void *async_write_log()
     {
-        string single_log;
+        std::string single_log;
         //从阻塞队列中取出一个日志string，写入文件
         while (m_log_queue->pop(single_log))
         {
@@ -44,6 +46,7 @@ private:
             fputs(single_log.c_str(), m_fp);
             m_mutex.unlock();
         }
+        return nullptr;
     }
 
 private:
@@ -55,15 +58,18 @@ private:
     int m_today;        //因为按天分类,记录当前时间是那一天
     FILE *m_fp;         //打开log的文件指针
     char *m_buf;
-    block_queue<string> *m_log_queue; //阻塞队列
+    block_queue<std::string> *m_log_queue; //阻塞队列
     bool m_is_async;                  //是否同步标志位
     locker m_mutex;
     int m_close_log; //关闭日志
+    pthread_t m_async_thread; //异步写日志的线程
 };
 
-#define LOG_DEBUG(format, ...) if(0 == m_close_log) {Log::get_instance()->write_log(0, format, ##__VA_ARGS__); Log::get_instance()->flush();}
-#define LOG_INFO(format, ...) if(0 == m_close_log) {Log::get_instance()->write_log(1, format, ##__VA_ARGS__); Log::get_instance()->flush();}
-#define LOG_WARN(format, ...) if(0 == m_close_log) {Log::get_instance()->write_log(2, format, ##__VA_ARGS__); Log::get_instance()->flush();}
-#define LOG_ERROR(format, ...) if(0 == m_close_log) {Log::get_instance()->write_log(3, format, ##__VA_ARGS__); Log::get_instance()->flush();}
+// LOG 宏不再在外部检查 m_close_log，改由 write_log() 内部过滤
+// 这样宏可在任意上下文安全调用，不依赖调用方是否有 m_close_log 变量
+#define LOG_DEBUG(format, ...) {Log::get_instance()->write_log(0, format, ##__VA_ARGS__); Log::get_instance()->flush();}
+#define LOG_INFO(format, ...)  {Log::get_instance()->write_log(1, format, ##__VA_ARGS__); Log::get_instance()->flush();}
+#define LOG_WARN(format, ...)  {Log::get_instance()->write_log(2, format, ##__VA_ARGS__); Log::get_instance()->flush();}
+#define LOG_ERROR(format, ...) {Log::get_instance()->write_log(3, format, ##__VA_ARGS__); Log::get_instance()->flush();}
 
 #endif

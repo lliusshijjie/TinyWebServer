@@ -5,8 +5,6 @@
 #include "../CGImysql/sql_connection_pool.h"
 #include "../log/log.h"
 
-// LOG_INFO / LOG_ERROR 宏依赖此变量（0 = 日志开启）
-namespace { int m_close_log = 0; }
 
 void UserCache::load(connection_pool* pool) {
     MYSQL* mysql = nullptr;

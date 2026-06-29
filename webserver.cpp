@@ -1,7 +1,16 @@
+#include <thread>
 #include "webserver.h"
 
 WebServer::WebServer()
 {
+    // 初始化所有文件描述符为 -1，防止析构时对垃圾值调用 close()
+    m_epollfd    = -1;
+    m_listenfd   = -1;
+    m_pipefd[0]  = -1;
+    m_pipefd[1]  = -1;
+    m_pool       = NULL;
+    m_connPool   = NULL;
+
     //http_conn类对象
     users = new http_conn[MAX_FD];
 
@@ -19,10 +28,10 @@ WebServer::WebServer()
 
 WebServer::~WebServer()
 {
-    close(m_epollfd);
-    close(m_listenfd);
-    close(m_pipefd[1]);
-    close(m_pipefd[0]);
+    if (m_epollfd  != -1) close(m_epollfd);
+    if (m_listenfd != -1) close(m_listenfd);
+    if (m_pipefd[1] != -1) close(m_pipefd[1]);
+    if (m_pipefd[0] != -1) close(m_pipefd[0]);
     delete[] users;
     delete[] users_timer;
     delete m_pool;
@@ -135,7 +144,6 @@ void WebServer::eventListen()
     utils.init(TIMESLOT);
 
     //epoll创建内核事件表
-    epoll_event events[MAX_EVENT_NUMBER];
     m_epollfd = epoll_create(5);
     assert(m_epollfd != -1);
 
@@ -245,7 +253,6 @@ bool WebServer::dealclientdata()
 bool WebServer::dealwithsignal(bool &timeout, bool &stop_server)
 {
     int ret = 0;
-    int sig;
     char signals[1024];
     ret = recv(m_pipefd[0], signals, sizeof(signals), 0);
     if (ret == -1)
@@ -305,6 +312,8 @@ void WebServer::dealwithread(int sockfd)
                 users[sockfd].improv.store(false, std::memory_order_relaxed);
                 break;
             }
+            // 避免忙等占满 CPU，让出时间片给工作线程
+            std::this_thread::yield();
         }
     }
     else
@@ -354,6 +363,8 @@ void WebServer::dealwithwrite(int sockfd)
                 users[sockfd].improv.store(false, std::memory_order_relaxed);
                 break;
             }
+            // 避免忙等占满 CPU，让出时间片给工作线程
+            std::this_thread::yield();
         }
     }
     else
@@ -411,7 +422,7 @@ void WebServer::eventLoop()
             {
                 bool flag = dealwithsignal(timeout, stop_server);
                 if (false == flag)
-                    LOG_ERROR("%s", "dealclientdata failure");
+                    LOG_ERROR("%s", "dealwithsignal failure");
             }
             //处理客户连接上接收到的数据
             else if (events[i].events & EPOLLIN)

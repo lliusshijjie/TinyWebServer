@@ -53,7 +53,8 @@ void connection_pool::init(string url, string User, string PassWord, string DBNa
 		++m_FreeConn;
 	}
 
-	reserve = sem(m_FreeConn);
+	// 用 reset() 替代拷贝赋值——sem_t 不可拷贝，赋值临时量会导致 double-destroy
+	reserve.reset(m_FreeConn);
 
 	m_MaxConn = m_FreeConn;
 }
@@ -123,7 +124,10 @@ void connection_pool::DestroyPool()
 //当前空闲的连接数
 int connection_pool::GetFreeConn()
 {
-	return this->m_FreeConn;
+	lock.lock();
+	int free = this->m_FreeConn;
+	lock.unlock();
+	return free;
 }
 
 connection_pool::~connection_pool()
